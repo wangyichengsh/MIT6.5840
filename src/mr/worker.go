@@ -1,9 +1,14 @@
 package mr
 
+import "os"
 import "fmt"
 import "log"
 import "net/rpc"
 import "hash/fnv"
+import "time"
+import "io/ioutil"
+import "encoding/json"
+import "sort"
 
 
 //
@@ -13,6 +18,12 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type ByKey []KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -27,7 +38,81 @@ func ihash(key string) int {
 
 //
 // main/mrworker.go calls this function.
-//
+//i
+
+func requestTask() (RequestTaskReply, bool) {
+	args := RequestTaskArgs{}
+	reply := RequestTaskReply{}
+	ok := call("Coordinator.RequestTask", &args, &reply)
+	return reply,ok
+}
+
+func closeTask(taskType int, taskId int) bool {
+	args := CloseTaskArgs{}
+	args.TaskType = taskType
+	args.TaskId = taskId
+	reply := CloseTaskReply{}
+	ok := call("Coordinator.CloseTask", &args, &reply)
+	return ok
+}
+
+func doMapTask(mapf func(string, string) []KeyValue, r RequestTaskReply) {
+	fmt.Println("Map")
+	fmt.Println(r)
+	intermediate := []KeyValue{}
+	// read date
+	filename := r.MapFilename
+	file, err := os.Open(filename)
+	if err != nil {
+        	log.Fatalf("cannot open %v", filename)
+        }
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+        	log.Fatalf("cannot read %v", filename)
+        }
+        file.Close()
+	// map process
+        kva := mapf(filename, string(content))
+        intermediate = append(intermediate, kva...)
+	
+	// save result
+	cache := make([][]KeyValue, r.ReduceNum)
+	for i := range cache {
+		cache[i] = []KeyValue{}
+	}
+	
+	for _,kv := range intermediate {
+		cache[ihash(kv.Key)%r.ReduceNum] = append(cache[ihash(kv.Key)%r.ReduceNum], kv)
+	}
+
+	for i := range cache {
+		sort.Sort(ByKey(cache[i]))
+		oname := fmt.Sprintf("mr-%v-%v", r.TaskId, i)
+		file, err := os.Create(oname)
+		if err != nil {
+			panic(err)
+		}
+		enc := json.NewEncoder(file)
+  		for _, kv := range cache[i] {
+    			err := enc.Encode(&kv)
+			if err != nil {
+				panic(err)
+			}
+		}
+		file.Close()
+	}
+	ok := closeTask(MapTask, r.TaskId)
+	if !ok {
+		panic("Close Map Task Failed!")
+	}
+}
+
+func doReduceTask(reducef func(string, []string) string, r RequestTaskReply) {
+	fmt.Println("Reduce")
+	fmt.Println(r)
+	time.Sleep(time.Second)
+}
+
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
@@ -35,6 +120,26 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
+	for {
+		reply,ok := requestTask()
+		if !ok {
+			panic("call failed!")
+		} 
+		switch reply.TaskType {
+
+			case MapTask:
+				doMapTask(mapf, reply)
+			case ReduceTask:
+				doReduceTask(reducef, reply)
+			case Wait:
+				time.Sleep(time.Second)
+			case Complete:
+				return
+			default:
+				panic(fmt.Sprintf("unexpected TaskType %v", reply.TaskType))
+		} 
+		
+	}
 
 }
 
