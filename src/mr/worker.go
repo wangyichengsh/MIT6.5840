@@ -10,7 +10,6 @@ import "io/ioutil"
 import "encoding/json"
 import "sort"
 
-
 //
 // Map functions return a slice of KeyValue.
 //
@@ -110,7 +109,38 @@ func doMapTask(mapf func(string, string) []KeyValue, r RequestTaskReply) {
 func doReduceTask(reducef func(string, []string) string, r RequestTaskReply) {
 	fmt.Println("Reduce")
 	fmt.Println(r)
-	time.Sleep(time.Second)
+	cnt := make(map[string][]string)
+	// Read Map Result
+	for i := 0; i< r.MapNum;i++ {
+		fn := fmt.Sprintf("mr-%v-%v", i, r.TaskId)
+		file,err := os.Open(fn)
+		if err != nil {
+			panic(err)
+		}
+		dec := json.NewDecoder(file)
+  		for {
+    			var kv KeyValue
+    			if err := dec.Decode(&kv); err != nil {
+      				break
+    			}
+			cnt[kv.Key] = append(cnt[kv.Key], kv.Value)
+    			
+  		}
+		file.Close()
+		defer os.Remove(fn)
+	}
+	// Save Result File
+	fn := fmt.Sprintf("mr-out-%v", r.TaskId)
+	file, _ := os.Create(fn)
+	for i := range cnt {
+		output := reducef(i, cnt[i])
+		fmt.Fprintf(file, "%v %v\n", i, output)
+	}
+	file.Close()
+	ok := closeTask(r.TaskType, r.TaskId)
+	if !ok {
+		panic("Close Reduce Task Failed!")
+	}
 }
 
 func Worker(mapf func(string, string) []KeyValue,

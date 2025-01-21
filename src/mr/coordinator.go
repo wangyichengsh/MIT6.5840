@@ -30,6 +30,7 @@ type Coordinator struct {
 	files []string
 	nMap int
 	nReduce int
+	timeout time.Duration
 	mapArrgRecd map[int]time.Time
 	mapFinishRecd map[int]time.Time
 	reduceArrgRecd map[int]time.Time
@@ -41,6 +42,7 @@ func (c *Coordinator) Init(files []string, nReduce int) {
 	c.files = files
 	c.nMap = len(files)
 	c.nReduce = nReduce
+	c.timeout = time.Duration(5) * time.Second
 	// c.mapArrgRecd = TaskRecd{} 
 	c.mapArrgRecd = make(map[int]time.Time)
 	// c.mapFinishRecd = TaskRecd{} 
@@ -67,6 +69,20 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 	}
 	// Wait for all map task be completed
 	if c.nMap > len(c.mapFinishRecd) {
+		for i := 0; i<c.nMap; i++ {
+			if _, ok := c.mapFinishRecd[i]; ok {
+				continue
+			}
+			st,_ := c.mapArrgRecd[i]
+			if time.Since(st)>c.timeout {
+				reply.TaskType = MapTask
+				reply.TaskId = i
+				reply.MapFilename = c.files[reply.TaskId]
+				reply.ReduceNum = c.nReduce
+				c.mapArrgRecd[reply.TaskId] = time.Now()
+				return nil
+			}
+		}
 		reply.TaskType = Wait
 		return nil
 	}
@@ -80,6 +96,19 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 	}
 	// Wait for all reduce task be completed
 	if c.nReduce > len(c.reduceFinishRecd) {
+		for i := 0;i<c.nReduce;i++ {
+			if _,ok := c.reduceFinishRecd[i];ok {
+				continue
+			}
+			st,_ := c.reduceArrgRecd[i] 
+			if time.Since(st)>c.timeout {
+				reply.TaskType = ReduceTask
+				reply.TaskId = i
+				reply.MapNum = c.nMap
+				c.reduceArrgRecd[reply.TaskId] = time.Now()
+				return nil
+			}
+		}
 		reply.TaskType = Wait
 		return nil
 	}
@@ -138,7 +167,9 @@ func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
-
+	if c.nReduce == len(c.reduceFinishRecd) {
+		ret = true
+	}
 
 	return ret
 }
